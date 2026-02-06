@@ -21,6 +21,7 @@
   },
   "homepage": "https://github.com/AndrewK-0/keep_up_with_the_music#readme",
   "dependencies": {
+    "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0"
