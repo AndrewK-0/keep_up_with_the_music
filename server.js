@@ -24,7 +24,7 @@ const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
 // Cache configuration
-const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes in milliseconds
+const CACHE_DURATION = 720 * 60 * 1000; // 720 minutes in milliseconds
 const CACHE_DIR = path.join(__dirname, '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'artists.json');
 const TOKEN_CACHE_FILE = path.join(CACHE_DIR, 'token.json');
