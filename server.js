@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import https from 'https';
 import dotenv from 'dotenv';
+import fs from 'fs';
 
 // Load environment variables
 dotenv.config();
@@ -22,12 +23,15 @@ const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
 // Cache configuration
 const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes in milliseconds
-let artistsCache = {
-  data: null,
-  timestamp: null,
-  accessToken: null,
-  tokenExpiry: null
-};
+const CACHE_DIR = path.join(__dirname, '.cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'artists.json');
+const TOKEN_CACHE_FILE = path.join(CACHE_DIR, 'token.json');
+
+// Ensure cache directory exists
+if (!fs.existsSync(CACHE_DIR)) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  console.log('Created cache directory:', CACHE_DIR);
+}
 
 // Security middleware - Helmet sets various HTTP headers
 app.use(helmet({
@@ -65,13 +69,78 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
+// File-based cache helper functions
+function readCacheFromDisk() {
+  try {
+    if (fs.existsSync(CACHE_FILE)) {
+      const data = fs.readFileSync(CACHE_FILE, 'utf8');
+      const cache = JSON.parse(data);
+      console.log(`Loaded cache from disk: ${cache.artists?.length || 0} artists, age: ${Math.floor((Date.now() - cache.timestamp) / 1000)}s`);
+      return cache;
+    }
+  } catch (error) {
+    console.error('Error reading cache from disk:', error.message);
+  }
+  return { artists: null, timestamp: null };
+}
+
+function writeCacheToDisk(artists) {
+  try {
+    const cache = {
+      artists: artists,
+      timestamp: Date.now()
+    };
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf8');
+    console.log(`Wrote ${artists.length} artists to cache file`);
+    return true;
+  } catch (error) {
+    console.error('Error writing cache to disk:', error.message);
+    return false;
+  }
+}
+
+function readTokenFromDisk() {
+  try {
+    if (fs.existsSync(TOKEN_CACHE_FILE)) {
+      const data = fs.readFileSync(TOKEN_CACHE_FILE, 'utf8');
+      const tokenData = JSON.parse(data);
+      
+      // Check if token is still valid
+      if (tokenData.expiry && Date.now() < tokenData.expiry) {
+        console.log('Loaded valid access token from disk');
+        return tokenData;
+      } else {
+        console.log('Token on disk has expired');
+      }
+    }
+  } catch (error) {
+    console.error('Error reading token from disk:', error.message);
+  }
+  return { token: null, expiry: null };
+}
+
+function writeTokenToDisk(token, expiresIn = 3600) {
+  try {
+    const tokenData = {
+      token: token,
+      expiry: Date.now() + (expiresIn * 1000)
+    };
+    fs.writeFileSync(TOKEN_CACHE_FILE, JSON.stringify(tokenData, null, 2), 'utf8');
+    console.log('Wrote access token to cache file');
+    return true;
+  } catch (error) {
+    console.error('Error writing token to disk:', error.message);
+    return false;
+  }
+}
+
 // Spotify API Functions
 function getSpotifyAccessToken() {
   return new Promise((resolve, reject) => {
-    // Check if we have a valid cached token
-    if (artistsCache.accessToken && artistsCache.tokenExpiry && Date.now() < artistsCache.tokenExpiry) {
-      console.log('Using cached access token');
-      return resolve(artistsCache.accessToken);
+    // Check if we have a valid cached token on disk
+    const cachedToken = readTokenFromDisk();
+    if (cachedToken.token && cachedToken.expiry && Date.now() < cachedToken.expiry) {
+      return resolve(cachedToken.token);
     }
 
     if (!CLIENT_ID || !CLIENT_SECRET) {
@@ -102,10 +171,9 @@ function getSpotifyAccessToken() {
       res.on('end', () => {
         if (res.statusCode === 200) {
           const tokenData = JSON.parse(data);
-          // Cache the token (expires in 1 hour, but we'll cache for 50 minutes to be safe)
-          artistsCache.accessToken = tokenData.access_token;
-          artistsCache.tokenExpiry = Date.now() + (50 * 60 * 1000);
-          console.log('Got new access token');
+          // Cache the token to disk (expires in 3600 seconds = 1 hour)
+          writeTokenToDisk(tokenData.access_token, tokenData.expires_in);
+          console.log('Got new access token from Spotify');
           resolve(tokenData.access_token);
         } else {
           reject(new Error(`Failed to get token: ${res.statusCode} - ${data}`));
@@ -283,14 +351,22 @@ async function getTopArtists(accessToken) {
 
 // Check if cache is valid
 function isCacheValid() {
-  if (!artistsCache.data || !artistsCache.timestamp) {
+  const cache = readCacheFromDisk();
+  
+  if (!cache.artists || !cache.timestamp) {
     return false;
   }
   
   const now = Date.now();
-  const cacheAge = now - artistsCache.timestamp;
+  const cacheAge = now - cache.timestamp;
   
   return cacheAge < CACHE_DURATION;
+}
+
+// Get cache data
+function getCachedArtists() {
+  const cache = readCacheFromDisk();
+  return cache.artists || null;
 }
 
 // Refresh cache
@@ -300,8 +376,8 @@ async function refreshCache() {
     const accessToken = await getSpotifyAccessToken();
     const artists = await getTopArtists(accessToken);
     
-    artistsCache.data = artists;
-    artistsCache.timestamp = Date.now();
+    // Write to disk instead of memory
+    writeCacheToDisk(artists);
     
     console.log(`Cache refreshed with ${artists.length} artists at ${new Date().toISOString()}`);
     return artists;
@@ -313,10 +389,22 @@ async function refreshCache() {
 
 // API Routes
 app.get('/api/health', (req, res) => {
+  const cache = readCacheFromDisk();
   const cacheStatus = isCacheValid() ? 'valid' : 'expired';
-  const cacheAge = artistsCache.timestamp 
-    ? Math.floor((Date.now() - artistsCache.timestamp) / 1000) 
+  const cacheAge = cache.timestamp 
+    ? Math.floor((Date.now() - cache.timestamp) / 1000) 
     : null;
+  
+  // Get cache file size
+  let cacheFileSize = 0;
+  try {
+    if (fs.existsSync(CACHE_FILE)) {
+      const stats = fs.statSync(CACHE_FILE);
+      cacheFileSize = Math.round(stats.size / 1024); // KB
+    }
+  } catch (error) {
+    // Ignore errors
+  }
   
   res.json({ 
     status: 'ok', 
@@ -324,7 +412,9 @@ app.get('/api/health', (req, res) => {
     cache: {
       status: cacheStatus,
       ageSeconds: cacheAge,
-      artistCount: artistsCache.data ? artistsCache.data.length : 0
+      artistCount: cache.artists ? cache.artists.length : 0,
+      fileSizeKB: cacheFileSize,
+      storage: 'disk'
     }
   });
 });
@@ -335,8 +425,8 @@ app.get('/api/artists', async (req, res) => {
     let artists;
     
     if (isCacheValid()) {
-      console.log('Serving artists from cache');
-      artists = artistsCache.data;
+      console.log('Serving artists from disk cache');
+      artists = getCachedArtists();
     } else {
       console.log('Cache expired or empty, fetching fresh data');
       artists = await refreshCache();
@@ -366,10 +456,11 @@ app.get('/api/artists/:id', async (req, res) => {
     const accessToken = await getSpotifyAccessToken();
     
     // Check if artist is in cache first
-    if (artistsCache.data) {
-      const cachedArtist = artistsCache.data.find(a => a.id === id);
+    const cachedArtists = getCachedArtists();
+    if (cachedArtists) {
+      const cachedArtist = cachedArtists.find(a => a.id === id);
       if (cachedArtist) {
-        console.log(`Serving artist ${id} details from cache`);
+        console.log(`Found artist ${id} in disk cache`);
       }
     }
     
