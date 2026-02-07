@@ -35,6 +35,7 @@ app.use(
     secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
     resave: false,
     saveUninitialized: false,
+    proxy: !isDev, // Trust proxy in production
     cookie: {
       httpOnly: true,
       secure: !isDev, // Only secure in production
@@ -76,20 +77,30 @@ if (!fs.existsSync(CACHE_DIR)) {
 }
 
 // Security middleware - Helmet
+// Different CSP for development and production
+const cspDirectives = {
+  defaultSrc: ["'self'"],
+  scriptSrc: ["'self'"],
+  styleSrc: ["'self'", "'unsafe-inline'"],
+  imgSrc: ["'self'", 'data:', 'https:', 'https://i.scdn.co'],
+  connectSrc: ["'self'"],
+  fontSrc: ["'self'"],
+  objectSrc: ["'none'"],
+  mediaSrc: ["'self'"],
+  frameSrc: ["'none'"],
+};
+
+// In production with nginx proxy manager, allow Cloudflare scripts
+if (!isDev) {
+  cspDirectives.scriptSrc.push('https://static.cloudflareinsights.com');
+  cspDirectives.connectSrc.push('https://cloudflareinsights.com');
+}
+
+// Security middleware - Helmet
 app.use(
   helmet({
     contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:', 'https:', 'https://i.scdn.co'],
-        connectSrc: ["'self'"],
-        fontSrc: ["'self'"],
-        objectSrc: ["'none'"],
-        mediaSrc: ["'self'"],
-        frameSrc: ["'none'"],
-      },
+      directives: cspDirectives,
     },
     crossOriginEmbedderPolicy: false,
   })
