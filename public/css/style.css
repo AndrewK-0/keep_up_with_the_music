@@ -52,6 +52,9 @@ header {
     border-bottom: 1px solid var(--border-color);
     position: relative;
     z-index: 10;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 header h1 {
@@ -62,6 +65,49 @@ header h1 {
     -webkit-text-fill-color: transparent;
     background-clip: text;
     letter-spacing: -0.02em;
+}
+
+/* Auth Controls */
+.auth-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.auth-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 24px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.auth-btn.login {
+    background: #1DB954;
+    color: white;
+}
+
+.auth-btn.login:hover {
+    background: #1ed760;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(29, 185, 84, 0.4);
+}
+
+.auth-btn.logout {
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.auth-btn.logout:hover {
+    background: var(--card-hover);
+    border-color: var(--accent-purple);
+    transform: translateY(-2px);
 }
 
 /* Main content area */
@@ -80,6 +126,23 @@ header h1 {
     background: var(--secondary-bg);
     border-right: 1px solid var(--border-color);
     position: relative;
+}
+
+/* List header */
+.list-header {
+    padding: 1.5rem 1.25rem 1rem;
+    background: var(--secondary-bg);
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.list-header h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
 }
 
 /* Custom scrollbar */
@@ -157,11 +220,28 @@ header h1 {
     width: 80px;
     height: 80px;
     border-radius: 10px;
-    object-fit: cover;
     flex-shrink: 0;
     box-shadow: var(--shadow-sm);
     position: relative;
     overflow: hidden;
+}
+
+.artist-card-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.artist-card-image .no-image {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--gradient-1);
+    font-size: 2rem;
+    font-weight: 700;
+    color: white;
 }
 
 .artist-card-image::after {
@@ -249,11 +329,6 @@ header h1 {
     opacity: 0.3;
 }
 
-.details-content {
-    max-width: 1000px;
-    margin: 0 auto;
-}
-
 /* Artist header in details */
 .artist-header {
     position: relative;
@@ -290,6 +365,21 @@ header h1 {
     flex-shrink: 0;
     box-shadow: var(--shadow-lg);
     border: 4px solid rgba(255, 255, 255, 0.1);
+}
+
+.artist-header-placeholder {
+    width: 240px;
+    height: 240px;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--gradient-1);
+    font-size: 6rem;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+    box-shadow: var(--shadow-lg);
 }
 
 .artist-header-info {
@@ -563,6 +653,8 @@ header h1 {
 @media (max-width: 768px) {
     header {
         padding: 1rem 1.25rem;
+        flex-direction: column;
+        gap: 1rem;
     }
 
     header h1 {
@@ -582,6 +674,14 @@ header h1 {
 
     .artist-list.hidden {
         display: none;
+    }
+
+    .list-header {
+        padding: 1rem 0.75rem 0.75rem;
+    }
+
+    .list-header h2 {
+        font-size: 1.25rem;
     }
 
     .artist-card {
@@ -619,9 +719,14 @@ header h1 {
         text-align: center;
     }
 
-    .artist-header-image {
+    .artist-header-image,
+    .artist-header-placeholder {
         width: 180px;
         height: 180px;
+    }
+
+    .artist-header-placeholder {
+        font-size: 4.5rem;
     }
 
     .artist-header-info h2 {
