@@ -4,6 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "minify:css": "cleancss -o public/css/style.min.css public/css/style.css",
+
+    "minify:js": "terser public/js/app.js -o public/js/app.min.js -c -m && terser public/js/comments.js -o public/js/comments.min.js -c -m",
+
+    "minify:html": "html-minifier-terser --collapse-whitespace --remove-comments --minify-css true --minify-js true public/index.html -o public/index.min.html && html-minifier-terser --collapse-whitespace --remove-comments public/comments.html -o public/comments.min.html",
+
+    "build": "npm run minify:css && npm run minify:js && npm run minify:html",
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "dev": "node --watch server.js"
