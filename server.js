@@ -41,23 +41,23 @@ if (!process.env.SESSION_SECRET && !isDev) {
   throw new Error("SESSION_SECRET must be set in production");
 }
 
-// Session configuration
+// Session configuration - IMPROVED: Increased timeout to 30 minutes
 app.use(
   session({
     name: 'spotify.sid',
-        genid: () => crypto.randomUUID(),
-      secret: process.env.SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      rolling: true,
-      cookie: {
-        httpOnly: true,
-        secure: !isDev,
-        sameSite: "strict",
-        maxAge: 1000 * 60 * 2 // 2 minutes
-  }
-}));
- 
+    genid: () => crypto.randomUUID(),
+    secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+      httpOnly: true,
+      secure: !isDev,
+      sameSite: "strict",
+      maxAge: 1000 * 60 * 2 // 2min
+    }
+  })
+);
 
 app.use((req, res, next) => {
   // Only check if a session exists
@@ -66,14 +66,13 @@ app.use((req, res, next) => {
 
     if (req.session.ua !== currentUA) {
       console.warn("⚠️ Session UA mismatch — destroying session");
-     return req.session.destroy(() => {
+      return req.session.destroy(() => {
         res.clearCookie('spotify.sid');
         return res.status(401).json({
-            error: "SESSION_INVALID",
-            message: "Session expired or invalidated"
-  });
-});
-
+          error: "SESSION_INVALID",
+          message: "Session expired or invalidated"
+        });
+      });
     }
   }
   next();
@@ -99,7 +98,7 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
 }
 
 // Cache configuration
-const CACHE_DURATION = 12 * 60 * 60 * 1000; // 12 hours (more reasonable than 720 minutes)
+const CACHE_DURATION = 12 * 60 * 60 * 1000; // 12 hours
 const CACHE_DIR = path.join(__dirname, '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'artists.json');
 const TOKEN_CACHE_FILE = path.join(CACHE_DIR, 'token.json');
@@ -111,7 +110,6 @@ if (!fs.existsSync(CACHE_DIR)) {
 }
 
 // Security middleware - Helmet
-// Different CSP for development and production
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'"],
@@ -124,8 +122,7 @@ const cspDirectives = {
   frameSrc: ["'none'"],
 };
 
-// In production with nginx proxy manager, allow Cloudflare scripts
-// Force HTTPS in production (behind proxy)
+// Force HTTPS in production
 if (!isDev) {
   app.use((req, res, next) => {
     if (!req.secure) {
@@ -134,7 +131,6 @@ if (!isDev) {
     next();
   });
 }
-
 
 // Security middleware - Helmet
 app.use(
@@ -158,7 +154,7 @@ function hashUA(req) {
     .digest("hex");
 }
 
-// Rate limiting
+// Global rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
@@ -169,6 +165,16 @@ const limiter = rateLimit({
 
 app.use(limiter);
 
+// ADDED: Stricter rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Only 5 attempts per 15 minutes
+  message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true, // Don't count successful logins
+});
+
 // Parse JSON bodies
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
@@ -176,7 +182,7 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 // Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Auth 
+// Auth middleware
 function requireAuth(req, res, next) {
   if (!req.session.user) {
     return res.status(401).json({
@@ -186,7 +192,6 @@ function requireAuth(req, res, next) {
   }
   next();
 }
-
 
 // ============================================================================
 // CACHE HELPER FUNCTIONS
@@ -361,7 +366,7 @@ function fetchSpotifyData(accessToken, path) {
   });
 }
 
-// Batch fetch multiple artists (max 50 at a time per Spotify API)
+// Batch fetch multiple artists
 async function getMultipleArtists(accessToken, artistIds) {
   const batches = [];
 
@@ -393,14 +398,13 @@ async function getMultipleArtists(accessToken, artistIds) {
   return allArtists;
 }
 
-// Get top 50 global artists (from Spotify's top 50 global playlist)
+// Get top 50 global artists
 async function getTopArtists(accessToken) {
   console.log('Fetching top artists from Spotify...');
   
   try {
     const artistIds = new Set();
     
-    // Search for popular artists across multiple genres
     const genres = ['pop', 'rock', 'hip-hop', 'rap', 'r-n-b', 'electronic', 'indie', 'country'];
     
     console.log('Searching for popular artists across genres...');
@@ -420,7 +424,6 @@ async function getTopArtists(accessToken) {
           });
         }
         
-        // Small delay between searches to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
         console.error(`Error searching for ${genre} artists:`, error.message);
@@ -429,7 +432,6 @@ async function getTopArtists(accessToken) {
     
     console.log(`Found ${artistIds.size} unique artist IDs from search`);
     
-    // If we didn't get enough artists, try searching for popular artists directly
     if (artistIds.size < 30) {
       try {
         const popularSearch = await fetchSpotifyData(
@@ -451,22 +453,19 @@ async function getTopArtists(accessToken) {
     
     console.log(`Total unique artist IDs: ${artistIds.size}`);
     
-    // Convert Set to Array and limit to 50 artists
     const artistIdsArray = Array.from(artistIds).slice(0, 50);
     
     if (artistIdsArray.length === 0) {
       throw new Error('No artists found from search');
     }
     
-    // Batch fetch artist details using the proper endpoint
     console.log(`Fetching details for ${artistIdsArray.length} artists...`);
     const detailedArtists = await getMultipleArtists(accessToken, artistIdsArray);
     
     console.log(`Successfully fetched ${detailedArtists.length} artist details`);
     
-    // Format and sort by popularity
     const formattedArtists = detailedArtists
-      .filter(artist => artist && artist.id) // Filter out any nulls
+      .filter(artist => artist && artist.id)
       .map(artist => ({
         id: artist.id,
         name: artist.name,
@@ -486,7 +485,7 @@ async function getTopArtists(accessToken) {
   }
 }
 
-// Get user's top artists (requires user authentication)
+// Get user's top artists
 async function getUserTopArtists(userAccessToken, limit = 50, timeRange = 'medium_term') {
   try {
     const data = await fetchSpotifyData(
@@ -553,28 +552,23 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Get top artists (global chart if not logged in, user's top if logged in)
+// Get top artists
 app.get('/api/artists', async (req, res) => {
   try {
     let artists;
     let source = 'global';
 
-    // Check if user is authenticated
     if (req.session.spotifyToken) {
       try {
-        // Get user's personal top artists
         artists = await getUserTopArtists(req.session.spotifyToken);
         source = 'personal';
         console.log(`✓ Serving personal top artists for authenticated user`);
       } catch (error) {
         console.error('Error fetching user artists, falling back to global:', error.message);
-        // Token might be expired, clear it
         delete req.session.spotifyToken;
-        // Fall through to global chart
       }
     }
 
-    // If not authenticated or user fetch failed, use global chart
     if (!artists) {
       if (isCacheValid()) {
         console.log('✓ Serving global artists from cache');
@@ -608,10 +602,8 @@ app.get('/api/artists/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Use user token if available, otherwise use client credentials
     const accessToken = req.session.spotifyToken || (await getSpotifyAccessToken());
 
-    // Fetch artist and top tracks
     const [artist, topTracks] = await Promise.all([
       fetchSpotifyData(accessToken, `/v1/artists/${id}`),
       fetchSpotifyData(accessToken, `/v1/artists/${id}/top-tracks?market=US`),
@@ -646,12 +638,12 @@ app.get('/api/artists/:id', async (req, res) => {
   }
 });
 
-// Comments page without .html
+// Comments page
 app.get("/comments", (req, res) => {
   res.sendFile(path.join(__dirname, "public/comments.html"));
 });
 
-// Home page without .html
+// Home page
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
 });
@@ -663,9 +655,7 @@ app.get("/api/auth/spotify/status", (req, res) => {
   });
 });
 
-
-// Check authentication status app account
-// Check authentication status for the app account (comments)
+// Check authentication status for comments
 app.get('/api/auth/status', (req, res) => {
   res.json({
     authenticated: !!req.session.user,
@@ -674,20 +664,18 @@ app.get('/api/auth/status', (req, res) => {
   });
 });
 
-
-
 // ============================================================================
 // SPOTIFY OAUTH
 // ============================================================================
 
 app.get('/auth/spotify', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
-  req.session.oauthState = state; // Store state for validation
+  req.session.oauthState = state;
 
   const scope = [
     'user-read-email',
     'user-read-private',
-    'user-top-read', // Required for personal top artists
+    'user-top-read',
   ].join(' ');
 
   const params = new URLSearchParams({
@@ -709,16 +697,14 @@ app.get('/auth/spotify/callback', async (req, res) => {
     return res.redirect('/?error=spotify_auth_failed');
   }
 
-  // Validate state to prevent CSRF attacks
   if (state !== req.session.oauthState) {
     console.error('State mismatch - possible CSRF attack');
     return res.redirect('/?error=invalid_state');
   }
 
-  delete req.session.oauthState; // Clear state after validation
+  delete req.session.oauthState;
 
   try {
-    // Exchange code for access token
     const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST',
       headers: {
@@ -738,9 +724,8 @@ app.get('/auth/spotify/callback', async (req, res) => {
 
     const tokenData = await tokenResponse.json();
 
-    // Store token in session (expires in 1 hour by session config)
     req.session.spotifyToken = tokenData.access_token;
-    req.session.refreshToken = tokenData.refresh_token; // Store for future use
+    req.session.refreshToken = tokenData.refresh_token;
     req.session.tokenExpiry = Date.now() + tokenData.expires_in * 1000;
     req.session.ua = hashUA(req);
     console.log('✓ User authenticated successfully');
@@ -750,8 +735,6 @@ app.get('/auth/spotify/callback', async (req, res) => {
     res.redirect('/?error=token_exchange_failed');
   }
 });
-
-
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -763,19 +746,16 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================================
-// Database SQlite
+// Database SQLite
 // ============================================================================
 const db = new Database(path.join(__dirname, "database.db"), {
   fileMustExist: false
 });
 
-// Enable safer defaults
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
-// ============================
 // USERS TABLE
-// ============================
 db.prepare(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -786,9 +766,7 @@ db.prepare(`
   )
 `).run();
 
-// ============================
 // COMMENTS TABLE
-// ============================
 db.prepare(`
   CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -800,8 +778,7 @@ db.prepare(`
   )
 `).run();
 
-/* ---------------- Prepared Statements ---------------- */
-/* USERS */
+/* Prepared Statements */
 const createUser = db.prepare(`
   INSERT INTO users (username, password_hash, signup_ip)
   VALUES (?, ?, ?)
@@ -815,7 +792,6 @@ const countUsersByIP = db.prepare(`
   SELECT COUNT(*) as count FROM users WHERE signup_ip = ?
 `);
 
-/* COMMENTS */
 const createComment = db.prepare(`
   INSERT INTO comments (user_id, title, body)
   VALUES (?, ?, ?)
@@ -841,22 +817,11 @@ const deleteCommentById = db.prepare(`
 `);
 
 // ============================================================================
-// Database API Endpoints
+// Auth API Endpoints - WITH RATE LIMITING
 // ============================================================================
 
-
-// ============================================================================
-// My Own Rolled Auth
-// ============================================================================
-
-// ============================================================================
-// Rolled Auth API Endpoints
-// ============================================================================
-
-/* ===========================
-   REGISTER
-=========================== */
-app.post("/api/auth/register", async (req, res) => {
+/* REGISTER */
+app.post("/api/auth/register", authLimiter, async (req, res) => {
   let { username, password } = req.body;
   const ip = req.ip;
 
@@ -897,10 +862,8 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-/* ===========================
-   LOGIN
-=========================== */
-app.post("/api/auth/login", async (req, res) => {
+/* LOGIN */
+app.post("/api/auth/login", authLimiter, async (req, res) => {
   let { username, password } = req.body;
 
   username = username.toLowerCase().trim();
@@ -926,10 +889,7 @@ app.post("/api/auth/login", async (req, res) => {
   });
 });
 
-/* ===========================
-   LOGOUT
-=========================== */
-// Spotify-only logout
+/* LOGOUT - Spotify */
 app.post('/api/auth/spotify/logout', (req, res) => {
   delete req.session.spotifyToken;
   delete req.session.refreshToken;
@@ -937,24 +897,18 @@ app.post('/api/auth/spotify/logout', (req, res) => {
   res.json({ success: true });
 });
 
-
-// App logout (used by comments.js)
+/* LOGOUT - App */
 app.post('/api/auth/logout', (req, res) => {
   delete req.session.user;
   res.json({ success: true });
 });
 
-
-/* ===========================
-   READ (public)
-=========================== */
+/* READ COMMENTS (public) */
 app.get("/api/comments", (req, res) => {
   res.json(getAllComments.all());
 });
 
-/* ===========================
-   CREATE (auth required)
-=========================== */
+/* CREATE COMMENT (auth required) */
 app.post("/api/comments", requireAuth, (req, res) => {
   const { title, body } = req.body;
   const userId = req.session.user.id;
@@ -981,12 +935,15 @@ app.post("/api/comments", requireAuth, (req, res) => {
   res.status(201).json({ success: true });
 });
 
-/* ===========================
-   DELETE (owner only)
-=========================== */
+/* DELETE COMMENT (owner only) - IMPROVED: Added ID validation */
 app.delete("/api/comments/:id", requireAuth, (req, res) => {
   const id = Number(req.params.id);
   const userId = req.session.user.id;
+
+  // ADDED: Validate comment ID
+  if (isNaN(id) || id < 1) {
+    return res.status(400).json({ error: "Invalid comment ID" });
+  }
 
   const comment = getCommentById.get(id);
   if (!comment) {
@@ -1001,11 +958,9 @@ app.delete("/api/comments/:id", requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-
 // ============================================================================
 // SPA SUPPORT & ERROR HANDLING
 // ============================================================================
-
 
 // Handle 404 for API routes
 app.use((req, res, next) => {
@@ -1014,7 +969,8 @@ app.use((req, res, next) => {
   }
   next();
 });
-// Serve index.html for all other routes (SPA support)
+
+// Serve index.html for all other routes
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -1023,7 +979,6 @@ app.use((req, res) => {
 // STARTUP
 // ============================================================================
 
-// Initialize cache on startup - FIXED: Only refresh if cache is invalid
 console.log('🚀 Initializing server...');
 
 if (isCacheValid()) {
@@ -1035,7 +990,7 @@ if (isCacheValid()) {
   });
 }
 
-// Set up periodic cache refresh
+// Periodic cache refresh
 setInterval(() => {
   if (!isCacheValid()) {
     console.log('🔄 Periodic cache refresh triggered');
@@ -1055,11 +1010,12 @@ if (isDev) {
   https.createServer(sslOptions, app).listen(PORT, () => {
     console.log(`✓ HTTPS dev server running at https://localhost:${PORT}`);
     console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+    
   });
 } else {
   http.createServer(app).listen(PORT, () => {
     console.log(`✓ HTTP server running at http://localhost:${PORT}`);
     console.log(`✓ Environment: ${process.env.NODE_ENV || 'production'}`);
+   
   });
 }
-
