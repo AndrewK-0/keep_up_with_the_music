@@ -175,7 +175,7 @@ function renderComment(comment) {
 
   div.innerHTML = `
     <h4>${comment.title}</h4>
-    <small>${comment.username} • ${new Date(comment.created_at).toLocaleString()}</small>
+    <small>${comment.username} • ${new Date(comment.created_at).toLocaleDateString()}</small>
     <p>${comment.body}</p>
   `;
 
