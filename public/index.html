@@ -5,19 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Keep Up With The Music</title>
     <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="/favicon.ico">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Keep Up With The Music</h1>
+            <h1>Keep Up With Music</h1>
 
             <div class="auth-controls">
-                <button id="spotifyLoginBtn" class="auth-btn login" style="display: none;">
-                    <span>🎧</span> Sign in with Spotify
+                <a href="/comments" class="nav-btn">
+                Comments
+                </a>
+                <p class="spotify-hint">
+                    Sign in to see <strong>your personal Top 50 artists</strong>
+                </p>
+                <div class="spotify-auth-card">
+                <button id="spotifyLoginBtn" class="auth-btn spotify">
+                    🎧 Sign in with Spotify
                 </button>
-                <button id="spotifyLogoutBtn" class="auth-btn logout" style="display: none;">
-                    <span>👤</span> Sign out
+                
+
+                <button id="spotifyLogoutBtn" class="auth-btn logout" >
+                    👤 Sign out
                 </button>
+                </div>
             </div>
         </header>
 

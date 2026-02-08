@@ -21,11 +21,15 @@
   },
   "homepage": "https://github.com/AndrewK-0/keep_up_with_the_music#readme",
   "dependencies": {
+    "argon2": "^0.44.0",
+    "better-sqlite3": "^12.6.2",
     "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "express-session": "^1.19.0",
-    "helmet": "^8.1.0"
+    "helmet": "^8.1.0",
+    "sanitize-html": "^2.17.0"
   }
 }

@@ -10,6 +10,10 @@ import fs from 'fs';
 import crypto from 'crypto';
 import session from 'express-session';
 import cookieParser from 'cookie-parser';
+import Database from 'better-sqlite3';
+import argon2 from "argon2";
+import sanitizeHtml from "sanitize-html";
+import cors from "cors"
 
 // Load environment variables
 dotenv.config();
@@ -23,27 +27,57 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Trust proxy for secure cookies
-app.set('trust proxy', 1);
+app.set('trust proxy', ['127.0.0.1', '::1']);
+
+app.use(cors({
+  origin: isDev ? "https://localhost:3000" : "https://yourdomain.com",
+  credentials: true
+}));
 
 // Middleware
 app.use(cookieParser());
+
+if (!process.env.SESSION_SECRET && !isDev) {
+  throw new Error("SESSION_SECRET must be set in production");
+}
 
 // Session configuration
 app.use(
   session({
     name: 'spotify.sid',
-    secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
-    resave: false,
-    saveUninitialized: false,
-    proxy: !isDev, // Trust proxy in production
-    cookie: {
-      httpOnly: true,
-      secure: !isDev, // Only secure in production
-      sameSite: isDev ? 'lax' : 'none',
-      maxAge: 1000 * 60 * 60, // 1 hour
-    },
-  })
-);
+        genid: () => crypto.randomUUID(),
+      secret: process.env.SESSION_SECRET,
+      resave: false,
+      saveUninitialized: false,
+      rolling: true,
+      cookie: {
+        httpOnly: true,
+        secure: !isDev,
+        sameSite: "strict",
+        maxAge: 1000 * 60 * 2 // 2 minutes
+  }
+}));
+ 
+
+app.use((req, res, next) => {
+  // Only check if a session exists
+  if (req.session && req.session.ua) {
+    const currentUA = hashUA(req);
+
+    if (req.session.ua !== currentUA) {
+      console.warn("⚠️ Session UA mismatch — destroying session");
+     return req.session.destroy(() => {
+        res.clearCookie('spotify.sid');
+        return res.status(401).json({
+            error: "SESSION_INVALID",
+            message: "Session expired or invalidated"
+  });
+});
+
+    }
+  }
+  next();
+});
 
 // Redirect to HTTPS in development
 if (isDev) {
@@ -81,7 +115,7 @@ if (!fs.existsSync(CACHE_DIR)) {
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'"],
-  styleSrc: ["'self'", "'unsafe-inline'"],
+  styleSrc: ["'self'"],
   imgSrc: ["'self'", 'data:', 'https:', 'https://i.scdn.co'],
   connectSrc: ["'self'"],
   fontSrc: ["'self'"],
@@ -91,10 +125,16 @@ const cspDirectives = {
 };
 
 // In production with nginx proxy manager, allow Cloudflare scripts
+// Force HTTPS in production (behind proxy)
 if (!isDev) {
-  cspDirectives.scriptSrc.push('https://static.cloudflareinsights.com');
-  cspDirectives.connectSrc.push('https://cloudflareinsights.com');
+  app.use((req, res, next) => {
+    if (!req.secure) {
+      return res.redirect(`https://${req.headers.host}${req.url}`);
+    }
+    next();
+  });
 }
+
 
 // Security middleware - Helmet
 app.use(
@@ -105,6 +145,18 @@ app.use(
     crossOriginEmbedderPolicy: false,
   })
 );
+app.use(helmet.hsts({
+  maxAge: 63072000,
+  includeSubDomains: true,
+  preload: true
+}));
+
+function hashUA(req) {
+  return crypto
+    .createHash("sha256")
+    .update(req.headers["user-agent"] || "")
+    .digest("hex");
+}
 
 // Rate limiting
 const limiter = rateLimit({
@@ -123,6 +175,18 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Auth 
+function requireAuth(req, res, next) {
+  if (!req.session.user) {
+    return res.status(401).json({
+      error: "SESSION_EXPIRED",
+      message: "Your session has expired. Please sign in again."
+    });
+  }
+  next();
+}
+
 
 // ============================================================================
 // CACHE HELPER FUNCTIONS
@@ -331,36 +395,93 @@ async function getMultipleArtists(accessToken, artistIds) {
 
 // Get top 50 global artists (from Spotify's top 50 global playlist)
 async function getTopArtists(accessToken) {
+  console.log('Fetching top artists from Spotify...');
+  
   try {
-    // Fetch Spotify's "Top 50 - Global" playlist
-    const playlistId = '37i9dQZEVXbMDoHDwVN2tF';
-    const data = await fetchSpotifyData(
-      accessToken,
-      `/v1/playlists/${playlistId}?fields=tracks.items(track(artists(id,name)))`
-    );
-
-    // Extract unique artist IDs from the playlist
-    const artistIdsSet = new Set();
-    data.tracks.items.forEach((item) => {
-      if (item.track && item.track.artists) {
-        item.track.artists.forEach((artist) => {
-          if (artist.id) {
-            artistIdsSet.add(artist.id);
-          }
-        });
+    const artistIds = new Set();
+    
+    // Search for popular artists across multiple genres
+    const genres = ['pop', 'rock', 'hip-hop', 'rap', 'r-n-b', 'electronic', 'indie', 'country'];
+    
+    console.log('Searching for popular artists across genres...');
+    
+    for (const genre of genres) {
+      try {
+        const searchData = await fetchSpotifyData(
+          accessToken,
+          `/v1/search?q=genre:${encodeURIComponent(genre)}&type=artist&limit=20`
+        );
+        
+        if (searchData.artists && searchData.artists.items) {
+          searchData.artists.items.forEach(artist => {
+            if (artist.id && artist.popularity > 50) {
+              artistIds.add(artist.id);
+            }
+          });
+        }
+        
+        // Small delay between searches to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        console.error(`Error searching for ${genre} artists:`, error.message);
       }
-    });
-
-    const artistIds = Array.from(artistIdsSet);
-    console.log(`Found ${artistIds.length} unique artists in Top 50 playlist`);
-
-    // Fetch full artist details
-    const artists = await getMultipleArtists(accessToken, artistIds);
-
-    // Sort by popularity and return top 50
-    return artists.sort((a, b) => b.popularity - a.popularity).slice(0, 50);
+    }
+    
+    console.log(`Found ${artistIds.size} unique artist IDs from search`);
+    
+    // If we didn't get enough artists, try searching for popular artists directly
+    if (artistIds.size < 30) {
+      try {
+        const popularSearch = await fetchSpotifyData(
+          accessToken,
+          '/v1/search?q=year:2020-2026&type=artist&limit=50'
+        );
+        
+        if (popularSearch.artists && popularSearch.artists.items) {
+          popularSearch.artists.items.forEach(artist => {
+            if (artist.id && artist.popularity > 60) {
+              artistIds.add(artist.id);
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error searching for recent artists:', error.message);
+      }
+    }
+    
+    console.log(`Total unique artist IDs: ${artistIds.size}`);
+    
+    // Convert Set to Array and limit to 50 artists
+    const artistIdsArray = Array.from(artistIds).slice(0, 50);
+    
+    if (artistIdsArray.length === 0) {
+      throw new Error('No artists found from search');
+    }
+    
+    // Batch fetch artist details using the proper endpoint
+    console.log(`Fetching details for ${artistIdsArray.length} artists...`);
+    const detailedArtists = await getMultipleArtists(accessToken, artistIdsArray);
+    
+    console.log(`Successfully fetched ${detailedArtists.length} artist details`);
+    
+    // Format and sort by popularity
+    const formattedArtists = detailedArtists
+      .filter(artist => artist && artist.id) // Filter out any nulls
+      .map(artist => ({
+        id: artist.id,
+        name: artist.name,
+        genres: artist.genres || [],
+        popularity: artist.popularity || 0,
+        followers: artist.followers?.total || 0,
+        images: artist.images || [],
+        spotify_url: artist.external_urls?.spotify || ''
+      }))
+      .sort((a, b) => b.popularity - a.popularity);
+    
+    return formattedArtists;
+    
   } catch (error) {
-    console.error('Error fetching top artists:', error);
+    console.error('Error in getTopArtists:', error);
     throw error;
   }
 }
@@ -386,12 +507,16 @@ async function refreshCache() {
     const accessToken = await getSpotifyAccessToken();
     const artists = await getTopArtists(accessToken);
 
+    if (!artists.length) {
+      throw new Error("No artists returned from Spotify");
+    }
+
     writeCacheToDisk(artists);
-    console.log(`✓ Cache refreshed with ${artists.length} artists at ${new Date().toISOString()}`);
+    console.log(`✓ Cache refreshed with ${artists.length} artists`);
     return artists;
   } catch (error) {
-    console.error('✗ Error refreshing cache:', error);
-    throw error;
+    console.error('✗ Error refreshing cache:', error.message);
+    return getCachedArtists() || [];
   }
 }
 
@@ -521,24 +646,35 @@ app.get('/api/artists/:id', async (req, res) => {
   }
 });
 
-// Check authentication status
-app.get('/api/auth/status', (req, res) => {
+// Comments page without .html
+app.get("/comments", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/comments.html"));
+});
+
+// Home page without .html
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/index.html"));
+});
+
+// Spotify auth status
+app.get("/api/auth/spotify/status", (req, res) => {
   res.json({
-    authenticated: !!req.session.spotifyToken,
-    expiresAt: req.session.cookie.expires,
+    authenticated: !!req.session.spotifyToken
   });
 });
 
-// Logout
-app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      return res.status(500).json({ success: false, error: 'Failed to logout' });
-    }
-    res.clearCookie('spotify.sid');
-    res.json({ success: true });
+
+// Check authentication status app account
+// Check authentication status for the app account (comments)
+app.get('/api/auth/status', (req, res) => {
+  res.json({
+    authenticated: !!req.session.user,
+    user: req.session.user || null,
+    expiresAt: req.session.cookie ? req.session.cookie.expires : null,
   });
 });
+
+
 
 // ============================================================================
 // SPOTIFY OAUTH
@@ -606,7 +742,7 @@ app.get('/auth/spotify/callback', async (req, res) => {
     req.session.spotifyToken = tokenData.access_token;
     req.session.refreshToken = tokenData.refresh_token; // Store for future use
     req.session.tokenExpiry = Date.now() + tokenData.expires_in * 1000;
-
+    req.session.ua = hashUA(req);
     console.log('✓ User authenticated successfully');
     res.redirect('/?auth=success');
   } catch (err) {
@@ -615,23 +751,7 @@ app.get('/auth/spotify/callback', async (req, res) => {
   }
 });
 
-// ============================================================================
-// SPA SUPPORT & ERROR HANDLING
-// ============================================================================
 
-// Handle 404 for API routes
-// ✅ Fixed version
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ error: 'API endpoint not found' });
-  }
-  next();
-});
-
-// Serve index.html for all other routes (SPA support)
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -640,6 +760,263 @@ app.use((err, req, res, next) => {
     error: 'Something went wrong!',
     message: isDev ? err.message : undefined,
   });
+});
+
+// ============================================================================
+// Database SQlite
+// ============================================================================
+const db = new Database(path.join(__dirname, "database.db"), {
+  fileMustExist: false
+});
+
+// Enable safer defaults
+db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
+
+// ============================
+// USERS TABLE
+// ============================
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    signup_ip TEXT NOT NULL
+  )
+`).run();
+
+// ============================
+// COMMENTS TABLE
+// ============================
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`).run();
+
+/* ---------------- Prepared Statements ---------------- */
+/* USERS */
+const createUser = db.prepare(`
+  INSERT INTO users (username, password_hash, signup_ip)
+  VALUES (?, ?, ?)
+`);
+
+const getUserByUsername = db.prepare(`
+  SELECT * FROM users WHERE username = ?
+`);
+
+const countUsersByIP = db.prepare(`
+  SELECT COUNT(*) as count FROM users WHERE signup_ip = ?
+`);
+
+/* COMMENTS */
+const createComment = db.prepare(`
+  INSERT INTO comments (user_id, title, body)
+  VALUES (?, ?, ?)
+`);
+
+const getAllComments = db.prepare(`
+  SELECT c.id, c.title, c.body, c.created_at, u.username, u.id as user_id
+  FROM comments c
+  JOIN users u ON c.user_id = u.id
+  ORDER BY c.created_at DESC
+`);
+
+const countCommentsByUser = db.prepare(`
+  SELECT COUNT(*) as count FROM comments WHERE user_id = ?
+`);
+
+const getCommentById = db.prepare(`
+  SELECT * FROM comments WHERE id = ?
+`);
+
+const deleteCommentById = db.prepare(`
+  DELETE FROM comments WHERE id = ?
+`);
+
+// ============================================================================
+// Database API Endpoints
+// ============================================================================
+
+
+// ============================================================================
+// My Own Rolled Auth
+// ============================================================================
+
+// ============================================================================
+// Rolled Auth API Endpoints
+// ============================================================================
+
+/* ===========================
+   REGISTER
+=========================== */
+app.post("/api/auth/register", async (req, res) => {
+  let { username, password } = req.body;
+  const ip = req.ip;
+
+  if (
+    typeof username !== "string" ||
+    typeof password !== "string" ||
+    username.length < 3 ||
+    password.length < 8
+  ) {
+    return res.status(400).json({ error: "Invalid username or password" });
+  }
+
+  username = username.toLowerCase().trim();
+
+  if (countUsersByIP.get(ip).count >= 3) {
+    return res.status(403).json({ error: "Account limit reached for this IP" });
+  }
+
+  try {
+    const hash = await argon2.hash(password, {
+      type: argon2.argon2id
+    });
+
+    const result = createUser.run(username, hash, ip);
+
+    req.session.user = {
+      id: result.lastInsertRowid,
+      username
+    };
+
+    req.session.ua = hashUA(req);
+    res.status(201).json({
+      success: true,
+      message: "Account created successfully"
+    });
+  } catch {
+    res.status(409).json({ error: "Username already exists" });
+  }
+});
+
+/* ===========================
+   LOGIN
+=========================== */
+app.post("/api/auth/login", async (req, res) => {
+  let { username, password } = req.body;
+
+  username = username.toLowerCase().trim();
+
+  const user = getUserByUsername.get(username);
+  if (!user) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  const valid = await argon2.verify(user.password_hash, password);
+  if (!valid) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  req.session.user = {
+    id: user.id,
+    username: user.username
+  };
+  req.session.ua = hashUA(req);
+  res.json({
+    success: true,
+    message: "Signed in successfully"
+  });
+});
+
+/* ===========================
+   LOGOUT
+=========================== */
+// Spotify-only logout
+app.post('/api/auth/spotify/logout', (req, res) => {
+  delete req.session.spotifyToken;
+  delete req.session.refreshToken;
+  delete req.session.tokenExpiry;
+  res.json({ success: true });
+});
+
+
+// App logout (used by comments.js)
+app.post('/api/auth/logout', (req, res) => {
+  delete req.session.user;
+  res.json({ success: true });
+});
+
+
+/* ===========================
+   READ (public)
+=========================== */
+app.get("/api/comments", (req, res) => {
+  res.json(getAllComments.all());
+});
+
+/* ===========================
+   CREATE (auth required)
+=========================== */
+app.post("/api/comments", requireAuth, (req, res) => {
+  const { title, body } = req.body;
+  const userId = req.session.user.id;
+
+  if (
+    typeof title !== "string" ||
+    typeof body !== "string" ||
+    title.length > 128 ||
+    body.length > 4000 ||
+    !title.trim() ||
+    !body.trim()
+  ) {
+    return res.status(400).json({ error: "Invalid comment length" });
+  }
+
+  if (countCommentsByUser.get(userId).count >= 5) {
+    return res.status(403).json({ error: "Comment limit reached" });
+  }
+
+  const cleanTitle = sanitizeHtml(title.trim(), { allowedTags: [], allowedAttributes: {} });
+  const cleanBody = sanitizeHtml(body.trim(), { allowedTags: [], allowedAttributes: {} });
+
+  createComment.run(userId, cleanTitle, cleanBody);
+  res.status(201).json({ success: true });
+});
+
+/* ===========================
+   DELETE (owner only)
+=========================== */
+app.delete("/api/comments/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const userId = req.session.user.id;
+
+  const comment = getCommentById.get(id);
+  if (!comment) {
+    return res.status(404).json({ error: "Comment not found" });
+  }
+
+  if (comment.user_id !== userId) {
+    return res.status(403).json({ error: "Not your comment" });
+  }
+
+  deleteCommentById.run(id);
+  res.json({ success: true });
+});
+
+
+// ============================================================================
+// SPA SUPPORT & ERROR HANDLING
+// ============================================================================
+
+
+// Handle 404 for API routes
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
+  next();
+});
+// Serve index.html for all other routes (SPA support)
+app.use((req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ============================================================================
@@ -685,3 +1062,4 @@ if (isDev) {
     console.log(`✓ Environment: ${process.env.NODE_ENV || 'production'}`);
   });
 }
+

@@ -9,7 +9,15 @@ let isAuthenticated = false;
 
 async function checkAuthStatus() {
   try {
-    const response = await fetch('/api/auth/status');
+    const response = await fetch('/api/auth/spotify/status');
+
+    if (response.status === 401) {
+      isAuthenticated = false;
+      updateAuthUI();
+      showSessionExpired();
+      return false;
+    }
+
     const data = await response.json();
     isAuthenticated = data.authenticated;
     updateAuthUI();
@@ -19,6 +27,7 @@ async function checkAuthStatus() {
     return false;
   }
 }
+
 
 function updateAuthUI() {
   const loginBtn = document.getElementById('spotifyLoginBtn');
@@ -39,7 +48,7 @@ function handleLogin() {
 
 async function handleLogout() {
   try {
-    const response = await fetch('/api/auth/logout', { method: 'POST' });
+   const response = await fetch('/api/auth/spotify/logout', { method: 'POST' });
     const data = await response.json();
 
     if (data.success) {
@@ -352,4 +361,42 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load artists
   loadArtists();
+
 });
+
+function showSessionExpired(message = "Your session expired. You’ve been signed out.") {
+  const banner = document.createElement("div");
+  banner.className = "session-expired-banner";
+  banner.textContent = message;
+
+  document.body.prepend(banner);
+
+  setTimeout(() => banner.remove(), 5000);
+}
+
+async function loadArtists() {
+  try {
+    showLoading();
+
+    const response = await fetch('/api/artists');
+
+    if (response.status === 401) {
+      isAuthenticated = false;
+      updateAuthUI();
+      showSessionExpired();
+      return;
+    }
+
+    const data = await response.json();
+
+    if (data.success) {
+      artistsData = data.artists;
+      displayArtists(artistsData, data.source);
+    } else {
+      showError('Failed to load artists');
+    }
+  } catch (error) {
+    console.error('Error loading artists:', error);
+    showError('Error connecting to server');
+  }
+}
